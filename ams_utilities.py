@@ -187,3 +187,45 @@ fname = path for figure to be saved to. generally as r'C:/.../.../{}'.format(fig
     #     fig.set_size_inches(11,8.5)
     for f in formats:
         fig.savefig(fname + f, transparent = transparent,dpi=dpi)
+	
+def points_in_circle_np(radius, x0=0, y0=0, ):
+""" 
+For xy points in a coordinate plane, generate a circle of radius = radius (in pixels) around point (x0,y0)
+"""
+    x_ = np.arange(x0 - radius - 1, x0 + radius + 1, dtype=int)
+    y_ = np.arange(y0 - radius - 1, y0 + radius + 1, dtype=int)
+    x, y = np.where((x_[:,np.newaxis] - x0)**2 + (y_ - y0)**2 <= radius**2)
+    for x, y in zip(x_[x], y_[y]):
+        yield x, y
+
+	
+	""" Sample use:
+	im_Gnb4 = tf.imread(“image.tif”)
+	plt.imshow(im_Gnb4)
+	im_Gnb4_shape = np.shape(im_Gnb4)
+	coords = data.iloc[:-3,2:4]
+	coords *= 8.1097
+	# print (im_shape)
+	# print (len(cell_area))
+	coords = round(coords)
+	radius = 15
+	avg_intensity = []
+	for index, row in coords.iterrows():
+	    sum_intensity = 0
+	    cell_area = [item for item in points_in_circle_np(radius, x0=row[‘Y’], y0=row[‘X’])]
+	    for pixel in cell_area:
+		if not (pixel[1]<0 or pixel[1]>im_Gnb4_shape[1] or pixel[0]<0 or pixel[0]>im_Gnb4_shape[0]):
+		    sum_intensity += im_Gnb4[pixel]
+	    avg_intensity.append(sum_intensity/len(cell_area))
+	# print(np.amax(avg_intensity))
+	# print(np.amin(avg_intensity))
+	Imax = np.amax(avg_intensity)
+	Imin = np.amin(avg_intensity)
+	num = avg_intensity - Imin
+	denom = Imax - Imin
+	norm_AI_Gnb4 = num/denom
+	#print(norm_AI_Gnb4)
+	temp_df_Gnb4 = pd.DataFrame(norm_AI_Gnb4, columns=[‘norm_AI_Gnb4’])
+	data_Gnb4 = pd.concat([data, temp_df_Gnb4], axis=1, sort=False)
+	data_Gnb4
+	"""
