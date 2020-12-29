@@ -1,5 +1,3 @@
-#For reading and analyzing .paq files in python because Matlab is stupid
-
 import os
 import sys
 import pyabf
@@ -7,14 +5,18 @@ import paq2py
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import DoC_tools as dt
+# import DoC_tools as dt
 import scipy.interpolate
 from ams_utilities import *
 import matplotlib.pyplot as plt
 from scipy.stats import linregress
 from scipy.signal import find_peaks
 from scipy.optimize import curve_fit
-import visual_behavior.utilities as vbu
+# import visual_behavior.utilities as vbu
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+'''
+Functions for creating single or multiple pandas DataFrames containing experiment-relevant ephys data and experiment labels.
+'''
 
 def p2p(datapath,plot=None):
 	data = paq2py.paq_read(datapath,plot=plot)
@@ -74,70 +76,91 @@ def make_paq_df_single(datapath,plot=None):
 
 	return df
 
-def Resting_Potential(df):
-	Resting_p = np.mean(df['Voltage'][0:5000])
+def raw_df_convert(raw_df,lines_to_drop=None,standardise=True):
+    # drop unwanted rows from dataset
+    df = raw_df.drop(lines_to_drop, axis=0)
+    df.dropna(inplace = True)
+    df = df.reset_index(drop=True)
+    cols = df['metric'].values
+    df = str_flt(df.iloc[:,1:])
 
-	return Resting_p
+    # Convert to float array and standardise data ((x - mean)/std)
+    if standardise==True:
 
-def Baselineshift(df):
-	start = np.mean(df['Voltage'][0:5000])
-	end = np.mean(df['Voltage'][(len(df['Voltage']) - 5000):])
-	Baselineshift = end - start
+        mean,std = np.mean(df) , np.std(df)
+        df -= mean
+        df /= std
 
-	return Baselineshift
+    # Transpose array so variables arranged column-wise 
+    data = df.T
+    data.columns = cols
+    data.columns.names = ['metric']
+    data.index.names = ["cell"]
+    data
+    
+    return data
 
-def Rheobase(df):
-	rheobase = np.mean(df['Current'][282000:284000]) - np.mean(df['Current'][0:5000])
+def IV_df(df):
+	IV_df = pd.DataFrame(pd.np.r_[
+		# df[15000:20000],
+		# df[35000:40000],
+		df[55000:60000],
+		df[75000:80000],
+		df[95000:100000],
+		df[115000:120000],
+		df[135000:140000],
+		df[155000:160000],
+		df[175000:180000],
+		df[195000:200000],
+		df[215000:220000]],columns=df.columns)
 
-	return rheobase 
+	return IV_df
 
-def find_spikes_range(df):
-	AP_range = df['Voltage'][294000:311000]
+def rheobase_df(df):
+	rb_df = df[280000:285050]
 
-	return AP_range
+	# rb_df = df[280020:285100]
 
-def AP12_drop(df):
-	AP_range  = find_spikes_range(df)
-	APs = find_peaks(AP_range,height=0.0)[1]
-	AP12_drop = APs['peak_heights'][0] - APs['peak_heights'][1]
+	return rb_df
 
-	return AP12_drop
+def rheobasex2_df(df):
+	R2_df = df[294000:311000]
 
-def APfl_drop(df):
-	AP_range  = find_spikes_range(df)
-	APs = find_peaks(AP_range,height=0.0)[1]
-	APfl_drop = APs['peak_heights'][0] - APs['peak_heights'][len(APs['peak_heights'])-1]
+	return R2_df
 
-	return APfl_drop
+def ramp_df(df):
+	ramp_df = df[319800:325500]
 
-def AP2l_drop(df):
-	AP_range  = find_spikes_range(df)
-	APs = find_peaks(AP_range,height=0.0)[1]
-	AP2l_drop = APs['peak_heights'][1] - APs['peak_heights'][len(APs['peak_heights'])-1]
+	return ramp_df
 
-	return AP2l_drop
+def rb2x10_df(df):
+	rb2x10_df = [df[347000:352025],
+		df[362000:367025],
+		df[377000:382025],
+		df[392000:397025],
+		df[407000:412025],
+		df[422000:427025],
+		df[437000:442025],
+		df[452000:457025],
+		df[467000:472025],
+		df[482000:487025]]
 
-def Max_AP_change(df):
-	AP_range  = find_spikes_range(df)
-	APs = find_peaks(AP_range,height=0.0)[1]
+	return rb2x10_df
 
-	diffs = []
+def Ih_df(df):
+	Ih = df[505000:560000]
 
-	for i,value in enumerate(APs['peak_heights']):
-	    diff = abs(APs['peak_heights'][len(APs['peak_heights'])-1] - value)
-	    diffs.append(diff)
-	    
-	max_diff = max(diffs)
+	return Ih
 
-	return max_diff
+def rheobasex4_df(df):
+	R4_df = df[567000:572100]
 
-
-def AP1_amp(df):
-	SFR = rheobase_df(df)
-	AP1 = find_peaks(SFR['Voltage'],height=0.0)[1]['peak_heights'][0]
-
-	return AP1
-
+	return R4_df
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+'''
+Functions for finding element-wise differences. Probably unneccesary considering np.diff() is a thing. Helpfully returns
+both differences and indicies of elements
+'''
 def get_v_diffs(df=None):
 
 	v_diffs = []
@@ -177,30 +200,117 @@ def get_t_diffs(df=None):
             
     return(t_diffs)
 
-def get_onset_offset_index(df=None):
+def get_onset_offset_index(df,spike=0,min_rate=1.5):
 
-	onset_index = []
-	v_diffs, index = get_v_diffs(df=df)
-        
-	for ii,rate in enumerate(v_diffs):
-	    if rate>=2.0:
-	        onset_idx = index[ii]
-	        onset_index.append(onset_idx)
+	'''
+	Crucially important function for finding the onset/offset of spikes based on the rate change of Vm. Importantly, 
+	this will generally only be useful for the first spike in a series.
+	'''
+	peaks = find_peaks(df['Voltage'],height=0.0)
+	peak = peaks[0][spike] + df.index[0]
+	v_diffs, index = get_v_diffs(df=df.loc[peak-40:peak])
+	onset_index = [index[ii] for ii,rate in enumerate(v_diffs) if rate>=min_rate][0]
+	if len(peaks[0])>1:
+		if (peaks[0][1] - peaks[0][0])<200:
+			offset_index =  np.where(df['Voltage'].loc[peak:]==min(df['Voltage'].loc[peaks[0][0]+ df.index[0]:peaks[0][1]+ df.index[0]]))[0][0] + peak
+		else:
+			offset_index =  np.where(df['Voltage'].loc[peak:]<df['Voltage'][onset_index]+1.0)[0][0] + peak
+	else:
+		offset_index =  np.where(df['Voltage'].loc[peak:]<df['Voltage'][onset_index]+1.0)[0][0] + peak
+	
+	
+	return onset_index,offset_index
+	
+	# peak = find_peaks(df['Voltage'],height=0.0)[0][spike] + df.index[0]
+	# v_diffs, index = get_v_diffs(df=df.loc[peak-40:peak])
+	# onset_index = [index[ii] for ii,rate in enumerate(v_diffs) if rate>=min_rate][0]
+	# offset_index =  np.where(df['Voltage'].loc[peak:]<df['Voltage'][onset_index]+1.0)[0][0] + peak
+	
+	return onset_index,offset_index
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+'''
+PARAM_DF FUNCTIONS:
+Functions for general cell properites
+'''
+def Resting_Potential(df):
+	Resting_p = np.mean(df['Voltage'][0:5000])
 
-	onset_voltage = df['Voltage'][onset_index[0]]
-	AP_v = (df['Voltage'].loc[onset_index[0]:])
-	# offset_index = np.where(np.logical_and(AP_v>=onset_voltage-4, AP_v<=onset_voltage+4))[0][1] + onset_index[0]
-	offset_index  = np.where(AP_v<onset_voltage)[0][0] + onset_index[0]
+	return Resting_p
 
-	return onset_index[0], offset_index
+def Baselineshift(df):
+	start = np.mean(df['Voltage'][0:5000])
+	end = np.mean(df['Voltage'][(len(df['Voltage']) - 5000):])
+	Baselineshift = end - start
+
+	return Baselineshift
+
+def input_resistance(df):
+
+	IV = IV_df(df)
+	hold = np.mean(df['Current'].loc[0:5000].mean())
+	y = IV['Voltage'].astype(float).groupby(IV.index//5001.0).mean() 
+	x = IV['Current'].astype(float).groupby(IV.index//5001.0).mean() - hold
+	input_resistance = linregress(x,y)[0]*1000
+
+	return input_resistance
+
+def tau(df):
+
+	df_tau = df[50000:53000]
+
+	x0 = df_tau['time']
+	y0 = df_tau['Voltage']
+
+	def func(t, a, tau, c):
+		return a * np.exp(-t / tau) + c
+
+	c_0 = y0.values[1]
+	tau_0 = 1
+	a_0 = (y0.values[0] - y0.values[-1])
+
+	popt, pcov = curve_fit(func, x0, y0,p0=(a_0, tau_0, c_0),maxfev=100000)
+	x = np.linspace(5.0,5.3,5000)
+	y = func(x,*popt) 
+
+	if np.std(y)<=1e-2:
+		try:
+			tau_0 = 4
+			popt, pcov = curve_fit(func, x0, y0,p0=(a_0, tau_0, c_0),maxfev=10000000)
+			x = np.linspace(5.0,5.3,5000)
+			y = func(x,*popt)  
+		except:
+			pass
+
+	tau = popt[1]*1000
+
+	return tau
+
+'''
+Functions called on the rheobase firing period
+'''
+
+def Rheobase(df):
+	rheobase = np.mean(df['Current'][282000:284000]) - np.mean(df['Current'][0:5000])
+	# ramp = ramp_df(df)
+	# on,off = get_onset_offset_index(ramp)
+	# rheobase = ramp['Current'].loc[on] - np.mean(df['Current'].loc[0:5000])
+
+	return rheobase 
+
+
+def AP1_amp(df):
+	SFR = rheobase_df(df)
+	AP1 = find_peaks(SFR['Voltage'],height=0.0)[1]['peak_heights'][0]
+
+	return AP1
 
 def AP_duration(df):
 
 	SFR = rheobase_df(df)
 	        
 	onset_index, offset_index = get_onset_offset_index(df=SFR)
-	onset_time = df['time'][onset_index]
-	offset_time = SFR['time'].loc[offset_index]
+	onset_time = df['time'].loc[onset_index]
+	offset_time = df['time'].loc[offset_index]
 	AP_duration = 1000*(offset_time - onset_time) 
 
 	return AP_duration
@@ -214,22 +324,26 @@ def AP1_abs_amp(df):
 	return AP_amp
 
 def AP_half_Width(df):
+	#Note: this version has been updated to find the indices nearest to the value of the hw to accommodate for a finte sampling rate
+	'''Find AP1 absolute amplitude above the onset voltage and AP1 max height. Subtract AP1 height from AP1 amplitude/2 to get hw voltage. Next, find the sample points to that voltage on either side of the peak.
+	Finally, find the dt from idx1 to idx2 to get spike half width. This approach isn't perfect due to finite sample rate but does give a fairly good approximation. '''
 
-	SFR = rheobase_df(df)
+	rb = rheobase_df(df)
 
 	AP_amp = AP1_abs_amp(df)
 	AP1 = AP1_amp(df)
 	AP_hw_amp = AP1 - AP_amp/2
-	onset_index, offset_index = get_onset_offset_index(df=SFR)
-	peak_idx = find_peaks(SFR['Voltage'],height=0.0)[0][0] + SFR.index[0]
+	onset_idx, offset_idx = get_onset_offset_index(df=rb)
+	peak_idx = find_peaks(rb['Voltage'],height=0.0)[0][0] + rb.index[0]
 
-	spike_range = df[onset_index:offset_index]
+	pre_spike = rb.loc[onset_idx:peak_idx]
+	post_spike = rb.loc[peak_idx:offset_idx]
 
-	hw_idx_1 = spike_range['Voltage'][(spike_range['Voltage']>=(AP1 - AP_amp/2))].index[0]
-	hw_idx_2 = spike_range['Voltage'][(spike_range['Voltage'].loc[peak_idx:].loc[peak_idx:]<=AP_hw_amp+2)
-                                  &(spike_range['Voltage']>=AP_hw_amp-8)].index[0]
-	hw_time_1 = spike_range['time'].loc[hw_idx_1]
-	hw_time_2 = spike_range['time'].loc[hw_idx_2]
+	hw_idx_1 = pre_spike.iloc[(pre_spike['Voltage']-AP_hw_amp).abs().argsort()[:1]].index[0]
+	hw_idx_2 = post_spike.iloc[(post_spike['Voltage']-pre_spike['Voltage'].loc[hw_idx_1]).abs().argsort()[:1]].index[0]
+
+	hw_time_1 = rb['time'].loc[hw_idx_1]
+	hw_time_2 = rb['time'].loc[hw_idx_2]
 	AP_hw = (hw_time_2 - hw_time_1)*1000.0
 
 	return AP_hw
@@ -265,7 +379,6 @@ def Rise_rate(df):
 
 	return rise_rate
 
-
 def Fall_rate(df):
 
 	AP_amp = AP1_abs_amp(df)
@@ -278,7 +391,7 @@ def ten_ninty_rise_time(df):
 
 	SFR = rheobase_df(df)
 	onset_index, offset_index = get_onset_offset_index(df=SFR)
-	onset_voltage = onset_voltage = df['Voltage'][onset_index]
+	onset_voltage = df['Voltage'][onset_index]
 	AP_amp =  AP1_abs_amp(df)
 	AP1 = AP1_amp(df)
 
@@ -293,157 +406,381 @@ def ten_ninty_rise_time(df):
 
 	return ten_ninety_rt
 
-def rheobase_df(df):
-	rb_df = df[280050:285100]
+# def Refractory_period(df):
 
-	return rb_df
+# 	rb_df = rheobase_df(df)
+# 	peaks = find_peaks(rb_df['Voltage'],height=0.0,distance=20)
+# 	rb_v_diffs, rb_index = get_v_diffs(df=rb_df)
+# 	rb_onset_index, rb_offset_index = get_onset_offset_index(df=rb_df)
 
-def rheobasex2_df(df):
-	R2_df = df[294000:311000]
+# 	rb_onset_voltage = rb_df['Voltage'][rb_onset_index]       
+# 	rb_onset_time = rb_df['time'][rb_onset_index]
+# 	rb_offset_voltage = rb_df['Voltage'].loc[rb_offset_index]
+# 	rb_offset_v = (rb_df['Voltage'].loc[rb_offset_index:])
 
-	return R2_df
+# 	rebound_array = [i for i in rb_offset_v if i > rb_onset_voltage+2]
 
-def rheobasex4_df(df):
-	R4_df = df[567000:572000]
+# 	if len(rebound_array)>1:
 
-	return R4_df
+# 	    rb_rebound_index = np.where(rb_offset_v > rb_onset_voltage+2)[0][0] + rb_offset_index
+# 	    rb_offset_time = rb_df['time'].loc[rb_offset_index]
+# 	    rb_rebound_time = rb_df['time'].loc[rb_rebound_index]
+# 	    rb_Refractory_period = 1000*(rb_rebound_time - rb_offset_time)
+
+# 	else:
+# 	    rb_rebound_index = np.where(np.diff(rb_df['Current'].loc[rb_offset_index:])==min(np.diff(rb_df['Current'].loc[rb_offset_index:])))[0][0] + rb_offset_index
+# 	    rb_Refractory_period = 'N/A'
+
+# 	node = find_peaks(rb_df['Voltage'].loc[int(rb_offset_index):int(rb_offset_index)+300],
+# 	                      distance=50,
+# 	                      height=min(rb_df['Voltage'].loc[int(rb_offset_index):rb_rebound_index])+0.5,
+# 	                      prominence=0.75,
+# 	                      # threshold=sAHP-100,
+# 	                      width=30)
+
+# 	if len(node[0]>0):
+# 		ADP_idx = node[0][0] + rb_offset_index
+# 		fAHP_min = min(rb_df['Voltage'].loc[int(rb_offset_index):ADP_idx])
+# 		fAHP = rb_onset_voltage - fAHP_min
+# 		ADP = node[1]['peak_heights'][0]-fAHP_min
+# 		if len(peaks[0])<=1:
+# 			sAHP_min = np.min(rb_df['Voltage'].loc[ADP_idx:ADP_idx+1500])
+# 			sAHP = rb_onset_voltage - sAHP_min
+# 		else:
+# 			sAHP_min = np.min(rb_df['Voltage'].loc[ADP_idx:peaks[0][1] + rb_df.index[0]])
+# 			sAHP = rb_onset_voltage - sAHP_min
+# 	else:#activated only without node
+# 		ADP = 0.0
+# 		ADP_idx = np.nan
+# 		fAHP_min = min(rb_df['Voltage'].loc[int(rb_offset_index):int(rb_offset_index)+50])
+# 		fAHP = rb_onset_voltage - fAHP_min
+# 		fAHP_idx = np.where(rb_df['Voltage'].loc[int(rb_offset_index):rb_rebound_index]==fAHP_min)[0][0]+rb_offset_index
+# 		if len(peaks[0])>1:
+# 			sAHP_min = min(rb_df['Voltage'].loc[int(rb_offset_index)+51:peaks[0][-1]+rb_df.index[0]])
+# 			sAHP = rb_onset_voltage - sAHP_min  
+# 		else:
+# 			sAHP_min = min(rb_df['Voltage'].loc[int(rb_offset_index)+51:rb_rebound_index]) 
+# 			sAHP = rb_onset_voltage - sAHP_min
+
+# 	if len(peaks[0])>1:
+# 		if peaks[0][1]-peaks[0][0]<300:
+# 			on2,off2 = get_onset_offset_index(rb_df.loc[rb_offset_index:],min_rate=3.0)	
+# 			ADP = rb_df['Voltage'][on2] -fAHP_min
+# 			ADP_idx = on2#peaks[0][1] + rb_df.index[0]
+# 			sAHP_min = np.min(rb_df['Voltage'].loc[ADP_idx:ADP_idx+1500])
+# 			sAHP = rb_onset_voltage - sAHP_min
+ 
+# 	return fAHP_min,fAHP,sAHP_min,sAHP,ADP,ADP_idx
 
 def Refractory_period(df):
 
 	rb_df = rheobase_df(df)
+	on,off = get_onset_offset_index(rb_df)
+	peaks = find_peaks(rb_df['Voltage'],height=0.0)[0] + rb_df.index[0]
 
-	rb_v_diffs, rb_index = get_v_diffs(df=rb_df)
-	rb_onset_index, rb_offset_index = get_onset_offset_index(df=rb_df)
+	if len(peaks)>1:
+		on2,off2 = get_onset_offset_index(rb_df,spike=1)
 
-	rb_onset_voltage = rb_df['Voltage'][rb_onset_index]       
-	rb_onset_time = rb_df['time'][rb_onset_index]
-	rb_offset_voltage = rb_df['Voltage'].loc[rb_offset_index]
-	rb_offset_v = (rb_df['Voltage'].loc[rb_offset_index:])
+		if (peaks[1] - peaks[0])<=300:
+			ADP_idx = on2
+			fAHP_idx = np.where(rb_df['Voltage'].loc[peaks[0]:ADP_idx]==min(rb_df['Voltage'].loc[peaks[0]:ADP_idx]))[0][0] + peaks[0]
+			fAHP_min = min(rb_df['Voltage'].loc[peaks[0]:ADP_idx])
+			fAHP = fAHP_min - rb_df['Voltage'].loc[on]
+			ADP = rb_df['Voltage'].loc[ADP_idx] - fAHP_min
 
-	rebound_array = [i for i in rb_offset_v if i > rb_onset_voltage+2]
+		else:
+			node = find_peaks(rb_df['Voltage'].loc[off:off+500],
+				distance=100,
+				height=min(rb_df['Voltage'].loc[off:off+500]),
+				prominence=0.75,
+				# threshold=sAHP-100,
+				width=30)
 
-	if len(rebound_array)>1:
+			if len(node[0])>0:
+				ADP_idx = node[0][0] + off
+				fAHP_idx = np.where(rb_df['Voltage'].loc[peaks[0]:ADP_idx]==min(rb_df['Voltage'].loc[peaks[0]:ADP_idx]))[0][0] + peaks[0]
+				fAHP_min = min(rb_df['Voltage'].loc[peaks[0]:ADP_idx])
+				fAHP = fAHP_min - rb_df['Voltage'].loc[on]
+				ADP = rb_df['Voltage'].loc[ADP_idx] - fAHP_min
+			else:
+				ADP_idx = np.nan
+				ADP = 0.0
+				fAHP_idx = np.where(rb_df['Voltage'].loc[peaks[0]:peaks[1]]==min(rb_df['Voltage'].loc[peaks[0]:peaks[1]]))[0][0] + peaks[0]
+				fAHP_min = min(rb_df['Voltage'].loc[peaks[0]:peaks[1]])
+				fAHP = fAHP_min - rb_df['Voltage'].loc[on]
 
-	    rb_rebound_index = np.where(rb_offset_v > rb_onset_voltage+2)[0][0] + rb_offset_index
-	    rb_offset_time = rb_df['time'].loc[rb_offset_index]
-	    rb_rebound_time = rb_df['time'].loc[rb_rebound_index]
-	    rb_Refractory_period = 1000*(rb_rebound_time - rb_offset_time)
-
+	########################################################################################################################################                
 	else:
-	    rb_rebound_index = np.where(np.diff(rb_df['Current'].loc[rb_offset_index:])==min(np.diff(rb_df['Current'].loc[rb_offset_index:])))[0][0] + rb_offset_index
-	    rb_Refractory_period = 'N/A'
+		
+		node = find_peaks(rb_df['Voltage'].loc[off:off+500],
+			distance=100,
+			height=min(rb_df['Voltage'].loc[off:off+500])+0.5,
+			prominence=0.75,
+			# threshold=sAHP-100,
+			width=20)
+		if len(node[0])>0:
+			ADP_idx = node[0][0] + off
+			fAHP_idx = np.where(rb_df['Voltage'].loc[peaks[0]:ADP_idx]==min(rb_df['Voltage'].loc[peaks[0]:ADP_idx]))[0][0] + peaks[0]
+			fAHP_min = min(rb_df['Voltage'].loc[peaks[0]:ADP_idx])
+			fAHP = fAHP_min - rb_df['Voltage'].loc[on]
+			ADP = rb_df['Voltage'].loc[ADP_idx] - fAHP_min
+	        
+		else:
+			ADP_idx = np.nan
+			ADP = 0.0
+			fAHP_idx = np.where(rb_df['Voltage'].loc[peaks[0]:285000]==min(rb_df['Voltage'].loc[peaks[0]:285000]))[0][0] + peaks[0]
+			fAHP_min =  min(rb_df['Voltage'].loc[peaks[0]:285000])
+			fAHP = fAHP_min - rb_df['Voltage'].loc[on]
 
-	sAHP_min = min(rb_df['Voltage'].loc[int(rb_offset_index):rb_rebound_index])
-	sAHP = rb_onset_voltage - sAHP_min
+	return fAHP_min, fAHP, fAHP_idx, ADP, ADP_idx
 
-	node = find_peaks(rb_df['Voltage'].loc[int(rb_offset_index):rb_rebound_index],
-	                      distance=20,
-	                      height=sAHP_min+1.0,
-	                      threshold=sAHP-100,
-	                      width=25)
+def sAHP(df):
+	sAHP_min = min(df['Voltage'].loc[310000:320500])
+	sAHP = sAHP_min - np.mean(df['Voltage'].loc[275000:280000])
+	sAHP_index = np.where(df['Voltage'].loc[310000:320500]==min(df['Voltage'].loc[310000:320500]))[0] + 310000
 
-	if len(node[0]>0):
-	    node_idx = node[0][0] + rb_offset_index
-	    fAHP_min = min(rb_df['Voltage'].loc[int(rb_offset_index):node_idx])
-	    fAHP = rb_onset_voltage - fAHP_min
-	    
-	    if fAHP_min == sAHP_min:
-	        sAHP_min = min(rb_df['Voltage'].loc[node_idx:rb_rebound_index])
-	        sAHP = rb_onset_voltage - sAHP_min   
-	else:#
-	    node = np.nan
-	    node_idx = np.nan
-	    fAHP_min = sAHP_min
-	    fAHP = sAHP   
-	    sAHP_min = sAHP_min
-	    sAHP = sAHP
-
-	return fAHP_min,fAHP,sAHP_min,sAHP,node,node_idx
-
-def input_resistance(df):
-
-	# v1 = np.mean(df['Voltage'].loc[15000:20000])
-	# v2 = np.mean(df['Voltage'].loc[35000:40000])
-	v3 = np.mean(df['Voltage'].loc[55000:60000])
-	v4 = np.mean(df['Voltage'].loc[75000:80000])
-	v5 = np.mean(df['Voltage'].loc[95000:100000])
-	v6 = np.mean(df['Voltage'].loc[115000:120000])
-	v7 = np.mean(df['Voltage'].loc[135000:140000])
-	v8 = np.mean(df['Voltage'].loc[155000:160000])
-	v9 = np.mean(df['Voltage'].loc[175000:180000])
-	v10 = np.mean(df['Voltage'].loc[195000:200000])
-	v11 = np.mean(df['Voltage'].loc[215000:220000])
-
-	# i1 = np.mean(df['Current'].loc[15000:20000])
-	# i2 = np.mean(df['Current'].loc[35000:40000])
-	i3 = np.mean(df['Current'].loc[55000:60000])
-	i4 = np.mean(df['Current'].loc[75000:80000])
-	i5 = np.mean(df['Current'].loc[95000:100000])
-	i6 = np.mean(df['Current'].loc[115000:120000])
-	i7 = np.mean(df['Current'].loc[135000:140000])
-	i8 = np.mean(df['Current'].loc[155000:160000])
-	i9 = np.mean(df['Current'].loc[175000:180000])
-	i10 = np.mean(df['Current'].loc[195000:200000])
-	i11 = np.mean(df['Current'].loc[215000:220000])
-	x = [i3,i4,i5,i6,i7,i8,i9,i10,i11]
-	y = [v3,v4,v5,v6,v7,v8,v9,v10,v11]
-
-	#i1,i2,
-	#v1,v2,
-	input_resistance = linregress(x,y)[0]*1000
-
-	return input_resistance
-
-def tau(df):
-
-	df_tau = df[50000:53000]
-
-	x0 = df_tau['time']
-	y0 = df_tau['Voltage']
-
-	def func(t, a, tau, c):
-		return a * np.exp(-t / tau) + c
-
-	c_0 = y0.values[1]
-	tau_0 = 1
-	a_0 = (y0.values[0] - y0.values[-1])
-
-	popt, pcov = curve_fit(func, x0, y0,p0=(a_0, tau_0, c_0),maxfev=100000)
-
-	tau = popt[1]*1000
-
-	return tau
+	return sAHP_min, sAHP, sAHP_index
 
 def delay_to_spike(df):
-# time from curren pulse onset to first action potential
-	df_delay = rheobase_df(df)
-	onset_index, offset_index = get_onset_offset_index(df=df_delay)
-
-	c_diffs, index = get_c_diffs(df=df_delay)
-	c_baseline = np.mean(df['Current'][0:5000])
-	c_baseline_std = np.std(df['Current'][0:5000])
-	c_rise = []
-	c_rise_index = []
-	for i,c_diff in enumerate(c_diffs):
-		if c_diff>c_baseline_std*2:
-			c_rise.append(c_diff)
-			c_rise_index.append(index[i])
-
-	delay = (df['time'][onset_index] - df['time'][c_rise_index[0]])*1000
+# time from current pulse onset to first action potential
+	rb = rheobase_df(df)
+	on,off = get_onset_offset_index(rb)
+	delay = (rb['time'][on] - rb['time'].iloc[0])*1000
 
 	return delay
 
+def delay_to_fAHP(df):
+	rb=rheobase_df(df)
+	peaks = find_peaks(rb['Voltage'],height=0.0)[0]
+	peaks += rb.index[0]
+	fAHP = Refractory_period(df)[0]
+	fAHP_delay_index = np.where(rb['Voltage'].loc[peaks[0]:peaks[0]+2500]==fAHP)[0][0] + peaks[0]
+	fAHP_delay = ((rb['time'][fAHP_delay_index]-rb['time'].iloc[0])*1000) - ((rb['time'][peaks[0]] - rb['time'].iloc[0])*1000)
+
+	return fAHP_delay
+
+'''
+Functions for 2x rheobase firing
+'''
+def AP12_drop(df):
+	AP_range  = rheobasex2_df(df)
+	APs = find_peaks(AP_range['Voltage'],height=0.0)[1]
+	AP12_drop = APs['peak_heights'][0] - APs['peak_heights'][1]
+
+	return AP12_drop
+
+def APfl_drop(df):
+	AP_range  = rheobasex2_df(df)
+	APs = find_peaks(AP_range['Voltage'],height=0.0)[1]
+	APfl_drop = APs['peak_heights'][0] - APs['peak_heights'][len(APs['peak_heights'])-1]
+
+	return APfl_drop
+
+def AP2l_drop(df):
+	AP_range  = rheobasex2_df(df)
+	APs = find_peaks(AP_range['Voltage'],height=0.0)[1]
+	AP2l_drop = APs['peak_heights'][1] - APs['peak_heights'][len(APs['peak_heights'])-1]
+
+	return AP2l_drop
+
+def Max_AP_change(df):
+	AP_range  = rheobasex2_df(df)
+	APs = find_peaks(AP_range['Voltage'],height=0.0)[1]
+
+	diffs = []
+
+	for i,value in enumerate(APs['peak_heights']):
+	    diff = abs(APs['peak_heights'][len(APs['peak_heights'])-1] - value)
+	    diffs.append(diff)
+	    
+	max_diff = max(diffs)
+
+	return max_diff
+
+'''
+Functions called on ramp depolarization
+'''
+def Threshold(df):
+	ramp = ramp_df(df)
+	rb = rheobase_df(df)
+	peaks = find_peaks(ramp['Voltage'],height=0.0)[0]
+	peaks +=ramp.index[0]
+	if len(peaks)>0:
+		try:
+			on,off = get_onset_offset_index(ramp)
+			threshold = ramp['Voltage'].loc[on]
+		except:
+			on,off = get_onset_offset_index(ramp,spike=0,min_rate=3.0)
+			threshold = ramp['Voltage'].loc[on]
+	else:
+		on,off = get_onset_offset_index(rb)
+		threshold = rb['Voltage'].loc[on]
+
+	return(threshold)
+
+'''
+Functions called on 2x10 rheobase firing
+'''
+def AP1_delay(df):
+	rb210 = rb2x10_df(df)
+	delays = []
+	for i,dft in enumerate(rb210):
+		try:
+			on,off = get_onset_offset_index(dft,spike=0,min_rate=4.0)
+		except IndexError:
+			try:
+				on,off = get_onset_offset_index(dft,spike=0,min_rate=6.0)
+			except :
+				try:
+					on,off = get_onset_offset_index(dft,spike=0,min_rate=8.0)
+				except:
+					try:
+						on,off = get_onset_offset_index(dft,spike=0,min_rate=10.0)
+					except:
+						on,off = get_onset_offset_index(dft,spike=0,min_rate=14.0)
+		delay = (dft['time'].loc[on] - dft['time'].iloc[0])*1000
+		delays.append(delay)
+
+	return np.mean(delays),np.std(delays)
+
+def AP2_delay(df):
+	rb210 = rb2x10_df(df)
+	delays = []
+	for i,dft in enumerate(rb210):
+		peaks = find_peaks(dft['Voltage'],height=0.0)[0]
+		peaks+= dft.index[0]
+		if len(peaks)>1:
+			delay = (dft['time'][peaks[1]] - dft['time'].iloc[0])*1000
+			delays.append(delay)
+		else:
+			delay = (dft['time'].iloc[-1] - dft['time'][peaks[0]])*1000
+
+	return np.mean(delays),np.std(delays)
+
+def rb2x_ISI_1_3(df):
+	rb210 =rb2x10_df(df)
+	avgs = []
+	for i,dft in enumerate(rb210):
+		peaks = find_peaks(dft['Voltage'],height=0.0)[0]
+		peaks += dft.index[0]
+		ISIs = []
+		for i,peak in enumerate(peaks):
+			try:
+				if i>0:
+					ISI = (dft['time'][peaks[i]] - dft['time'][peaks[i-1]])*1000
+					ISIs.append(ISI)
+			except:
+				pass
+		avgs.append(np.mean(ISIs[:3]))
+
+	return np.nanmean(avgs),np.nanstd(avgs)
+
+
+def ISI_accom_ratio(df):
+	rb210 = rb2x10_df(df)
+	AP12_accom = []
+	APlast_accom = []
+
+	for i,dft in enumerate(rb210):
+		peaks = find_peaks(dft['Voltage'],height=0.0)[0]
+		peaks += dft.index[0]
+		if len(peaks)>=3:
+			ISI1_2 =  ((dft['time'][peaks[2]]-dft['time'][peaks[1]])/(dft['time'][peaks[1]]-dft['time'][peaks[0]]))
+			AP12_accom.append(ISI1_2)
+			
+			ISI_last = ((dft['time'][peaks[-1]]-dft['time'][peaks[-2]])/(dft['time'][peaks[-2]]-dft['time'][peaks[-3]]))
+			APlast_accom.append(ISI_last)
+		elif len(peaks)==2:
+			ISI1_2 = dft['time'][peaks[1]]/dft['time'][peaks[0]]
+			ISI_last =  dft['time'][peaks[-1]]/dft['time'][peaks[-2]]
+			AP12_accom.append(ISI1_2)
+			APlast_accom.append(ISI_last)
+		else:
+			AP12_accom.append(dft['time'].iloc[-1]/dft['time'][peaks[0]])
+			APlast_accom.append(dft['time'].iloc[-1]/dft['time'][peaks[0]])
+	    
+	return np.mean(AP12_accom),np.std(AP12_accom),np.mean(APlast_accom),np.std(APlast_accom)
+
+def ISI_accom_diff(df):
+	rb210 = rb2x10_df(df)
+	AP12_accom = []
+	APlast_accom = []
+
+	for i,dft in enumerate(rb210):
+		peaks = find_peaks(dft['Voltage'],height=0.0)[0]
+		peaks += dft.index[0]
+		if len(peaks)>=3:
+			ISI1_2 =  ((dft['time'][peaks[2]]-dft['time'][peaks[1]])-(dft['time'][peaks[1]]-dft['time'][peaks[0]]))*1000
+			AP12_accom.append(ISI1_2)
+			
+			ISI_last = ((dft['time'][peaks[-1]]-dft['time'][peaks[-2]])-(dft['time'][peaks[-2]]-dft['time'][peaks[-3]]))*1000
+			APlast_accom.append(ISI_last)
+		elif len(peaks)==2:
+			ISI1_2 = (dft['time'][peaks[1]]-dft['time'][peaks[0]])*1000
+			ISI_last =  (dft['time'][peaks[-1]]-dft['time'][peaks[-2]])*1000
+			AP12_accom.append(ISI1_2)
+			APlast_accom.append(ISI_last)
+		else:
+			AP12_accom.append((dft['time'].iloc[-1]-dft['time'][peaks[0]])*1000)
+			APlast_accom.append((dft['time'].iloc[-1]-dft['time'][peaks[0]])*1000)
+
+	return np.mean(AP12_accom),np.std(AP12_accom),np.mean(APlast_accom),np.std(APlast_accom)
+
+def Avg_spike_rate(df):
+	num_spikes = []
+	rb210 = rb2x10_df(df)
+	for i,dft in enumerate(rb210):
+		peaks = find_peaks(dft['Voltage'],height=0.0)
+		sps = len(peaks[0])/(dft['time'].iloc[-1]-dft['time'].iloc[0])
+		num_spikes.append(sps)
+
+	return np.mean(num_spikes)
+
+def CV(df):
+	rb210 = rb2x10_df(df)
+	ISIs = []
+	for i,dft in enumerate(rb210):
+		peaks =find_peaks(dft['Voltage'],height=0.0)[0]
+		peaks+= dft.index[0]
+		try:
+			for i,peak in enumerate(peaks):
+				if i>0:
+					ISI = (dft['time'][peaks[i]]-dft['time'][peaks[i-1]])*1000  
+					ISIs.append(ISI)
+		except:
+			pass
+	if len(ISIs)>0:
+		CV = np.std(ISIs)/np.mean(ISIs)
+	else:
+		CV = 0.0
+	return CV
+
+'''
+Functions called on strong hyperolarization peroid.
+'''
+def Ih(df):
+	dft = Ih_df(df)
+	sag_idx = find_peaks(-dft['Voltage'].loc[:515000],distance = 10000,width=100,prominence=3.0)[0]
+	sag_idx += dft.index[0]
+	sag = dft['Voltage'].loc[sag_idx[0]]
+	ss_v = np.mean(dft['Voltage'].loc[510000:511000])
+	Ih = sag - ss_v
+
+	return Ih
+
+'''
+Functions called on the 4x rheobase firing period.
+'''
 def ISIs(df):
 
 	R4 = rheobasex4_df(df)
-
-	peaks = find_peaks(R4['Voltage'], height = 0.0,distance=50)
+	peaks = find_peaks(R4['Voltage'],height=2.0,distance=20.0,width=5.0,prominence=10.0)
+	pps = len(peaks[0])/(R4['time'].iloc[-1]-R4['time'].iloc[0])
 
 	if len(peaks[0])<3:
 		R2 = rheobasex2_df(df)
-
-		peaks = find_peaks(R2['Voltage'], height = 0.0,distance=50)
-
+		peaks = find_peaks(R2['Voltage'],height=2.0,distance=20.0,width=5.0,prominence=10.0)
+		pps = len(peaks[0])/(R2['time'].iloc[-1]-R2['time'].iloc[0])
 	ISIs = []
 
 	for i,peak in enumerate(peaks[0]):
@@ -454,8 +791,16 @@ def ISIs(df):
 	max_ISI = max(ISIs)
 	min_ISI = min(ISIs)
 	mean_ISI = np.mean(ISIs)
+	median_ISI = np.median(ISIs)
 
-	return ISIs,max_ISI,min_ISI,mean_ISI
+	return ISIs,max_ISI,min_ISI,mean_ISI,median_ISI,pps
+
+def ISI_stats(df):
+	ISI = ISIs(df)[0]
+	avg_ISI_1_3 = np.mean(ISI[:3])
+	std_ISI_1_3 = np.std(ISI[:3])
+
+	return avg_ISI_1_3, std_ISI_1_3
 
 def ISI_1_2(df):
 	try:
@@ -488,7 +833,7 @@ def avg_FR(df):
 
 def FR_adaptation(df):
 	R4 = rheobasex4_df(df)
-	peaks = find_peaks(R4['Voltage'], height = 5.0,distance=50)
+	peaks = find_peaks(R4['Voltage'],height=2.0,distance=20.0,width=5.0,prominence=10.0)
 	ISIs = []
 	peaks100 = []
 	peaks400 = []
@@ -500,16 +845,21 @@ def FR_adaptation(df):
 
 	if len(peaks100)<=0:
 		R2 = rheobasex2_df(df)
-		peaks100 = find_peaks(R2['Voltage'][0:1000], height = 5.0,distance=50)
-		peaks400 = find_peaks(R2['Voltage'][len(R2['Voltage'])-4000:], height = 5.0,distance=50)
+		peaks100 = find_peaks(R2['Voltage'][0:1000], height=2.0,distance=20.0,width=5.0,prominence=10.0)
+		peaks400 = find_peaks(R2['Voltage'][len(R2['Voltage'])-4000:], height=2.0,distance=20.0,width=5.0,prominence=10.0)
 	FRadapt = 100*((len(peaks100) - len(peaks400))/len(peaks100))
 	return FRadapt
-
+	
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+'''
+Param_df creation calls all analysis functions and concatenates them into a pandas DataFrame of analyzed variables.
+'''
 def make_param_df(df):
 
 	Parameter_dict ={'Recording_Date':get_date(df),
                  'Resting_Membrane_P':Resting_Potential(df),
-                 'Basline_shift':Baselineshift(df),
+                 'Baseline_shift':Baselineshift(df),
+                 'Threshold':Threshold(df),
                  'Rheobase':Rheobase(df),
                  'AP1-2_drop':AP12_drop(df),
                  'AP1-last_drop':APfl_drop(df),
@@ -517,7 +867,7 @@ def make_param_df(df):
                  'Max_AP_change':Max_AP_change(df),
                  'AP1_amp':AP1_amp(df),
                  'AP1_abs_amp':AP1_abs_amp(df),
-                 'Onset_Voltage':AP1_amp(df)-AP1_abs_amp(df),
+                 # 'Onset_Voltage':AP1_amp(df)-AP1_abs_amp(df),
                  'AP_duration':AP_duration(df),
                  'AP_1/2_Width':AP_half_Width(df),
                  'Rise_time':Rise_time(df),
@@ -527,19 +877,41 @@ def make_param_df(df):
                  '10-90%_rise_time':ten_ninty_rise_time(df),
                  'fAHP_min_voltage':Refractory_period(df)[0],
                  'fAHP':Refractory_period(df)[1],
-                 'sAHP_min_voltage':Refractory_period(df)[2],
-                 'sAHP':Refractory_period(df)[3],
+                 'sAHP_min_voltage':sAHP(df)[0],
+                 'sAHP':sAHP(df)[1],
+                 'ADP':Refractory_period(df)[3],
                  # 'Rheobase_Refractory_period':Refractory_period(df)[2],
                  'Tau':tau(df),
                  'Delay_to_Spike':delay_to_spike(df),
+                 'Delay_to_fAHP':delay_to_fAHP(df),
                  'ISIs': ISIs(df)[0],
                  'Max_ISI':ISIs(df)[1],
                  'Min_ISI':ISIs(df)[2],
                  'Mean_ISI':ISIs(df)[3],
+                 'Median_ISI':ISIs(df)[4],
+				 'Avg_AP1_delay': AP1_delay(df)[0],
+				 'STD_AP1_delay': AP1_delay(df)[1],
+				 'Avg_AP2_delay': AP2_delay(df)[0],
+				 'STD_AP2_delay': AP2_delay(df)[1],	
+				 'Avg_Intl_Accom_ratio':ISI_accom_ratio(df)[0],
+				 'STD_Intl_Accom_ratio':ISI_accom_ratio(df)[1],
+				 'Avg_SS_Accom_ratio':ISI_accom_ratio(df)[2],
+				 'STD_SS_Accom_ratio':ISI_accom_ratio(df)[3],
+				 'Avg_Intl_Accom_diff':ISI_accom_diff(df)[0],
+				 'STD_Intl_Accom_diff':ISI_accom_diff(df)[1],
+				 'Avg_SS_Accom_diff':ISI_accom_diff(df)[2],
+				 'STD_SS_Accom_diff':ISI_accom_diff(df)[3],
+				 'Avg_2x_ISI_1_3': rb2x_ISI_1_3(df)[0],
+				 'STD_2x_ISI_1_3': rb2x_ISI_1_3(df)[1],
+				 'CV':CV(df),
+                 'Spikes/sec':Avg_spike_rate(df),
+                 'Ih':Ih(df),
                  'ISI_1_2': ISI_1_2(df),
                  'ISI_1_last': ISI_1_last(df),
-                 'Max_FR': max_FR(df),
-                 'Min_FR': min_FR(df),
+                 'Avg_4x_ISI_1_3':ISI_stats(df)[0],
+                 'STD_4x_ISI_1_3':ISI_stats(df)[1],
+                 # 'Max_FR': max_FR(df),
+                 # 'Min_FR': min_FR(df),
                  # 'Mean_FR': avg_FR(df),
                  'FR_adaptation': FR_adaptation(df),
                  'Input_Resistance':input_resistance(df),
@@ -548,25 +920,3 @@ def make_param_df(df):
 	df_params = pd.DataFrame.from_dict(Parameter_dict,orient='index',columns = df.mouseID.unique()+': '+df.Cell.unique())
 
 	return(df_params)
-
-def raw_df_convert(raw_df,lines_to_drop=None):
-    
-    datab = raw_df.drop(lines_to_drop, axis=0)
-    datab.dropna(inplace = True)
-    datab = datab.reset_index(drop=True)
-    cols = datab['metric'].values
-    # col
-
-    # Convert to float array and standardise data ((x - mean)/std)
-    datab = str_flt(datab.iloc[:,1:])
-    datab -= np.mean(datab)
-    datab /= np.std(datab)
-
-    # Transpose array so variables arranged column-wise 
-    data = datab.T
-    data.columns = cols
-    data.columns.names = ['metric']
-    data.index.names = ["cell"]
-    data
-    
-    return data
