@@ -19,19 +19,36 @@ from matplotlib import cm
 import matplotlib.image as mpimg
 from scipy.stats import beta
 import math
+from scipy.stats import linregress
+from scipy.signal import find_peaks
+from scipy.optimize import curve_fit
+import visual_behavior.utilities as vbu
 
 
 
-def GS_to_df(url):
+def GS_to_df(certificate,sheet = None,tab=0):
 	"""
 	For converting a Google spreadsheet into a pandas-readable csv. Can be any sheet of the spreadsheet but must include the sheet ID (gid=...).
 	url = shared Google spreadsheet url
 	"""
-	csv_export_url = url.replace('/edit#gid=', '/export?format=csv&gid=')
-	df = pd.read_csv(csv_export_url)
+	import pygsheets
 
+	#authorization
+	gc = pygsheets.authorize(service_file=certificate)
+	#open GS
+	sh = gc.open(sheet)
+	wks = sh[tab]
+	#get data
+	data = wks.get_all_values()
+	headers = data.pop(0)
+	#make into dataframe
+	df = pd.DataFrame(data,columns=headers)
+
+	'this code is depricated due to a parsing error in python'
+	# csv_export_url = url.replace('/edit#gid=', '/export?format=csv&gid=')
+	# df = pd.read_csv(csv_export_url)
+	# export?format=csv'
 	return df
-
 
 def smooth_timeseries(x,y,N=None):
 	"""
@@ -152,14 +169,19 @@ def load_image(path):
 	return image
 
 def p2f(x):
-#a simple functions for converting a percentage string to a float decimal
+#a simple function for converting a percentage string to a float decimal
 	return float(x.strip('%'))/100
 
 def str_flt(array):
 	"""
 	create a new array of floats from and array of strings
 	"""
-	new_array = array.astype(np.float)
+	import re, ast
+	try:
+		new_array = array.astype(np.float)
+	except:
+		array = re.sub('\s+', ' ', array)
+		new_array  = np.array(ast.literal_eval(array)) 
 	
 	return new_array
 
@@ -189,7 +211,37 @@ def save_figure(fig, fname, formats = ['.pdf'],transparent=False,dpi=300,facecol
 	#     fig.set_size_inches(11,8.5)
 	for f in formats:
 		fig.savefig(fname + f, transparent = transparent,dpi=dpi)
-	
+
+def get_response_windows(stims,df,before=5000,after=20000,start=0,stop=None,step=3):
+
+    '''Get time series of data in a window around an index or list of indicies.
+Provide a DataFrame object and window (frame integers) around the stim index to reference into. Returns a list
+of values corresponding to the window
+''' 
+    response_windows = [df['Membrane Voltage (mV)'].iloc[stim-before:stim+after].values for i,stim in enumerate(stims[start:stop:step])]
+
+    return response_windows
+
+def stim_onset(data,distance=None,num_std=None):
+	stim_frames = find_peaks(data,height=(np.mean(data)+np.std(data)*num_std),width=1)[0]
+	stims = [stim_frames[0]]
+	for i,onset in enumerate(stim_frames[:len(stim_frames)-1]):
+		if (stim_frames[i]-stim_frames[i-1])>distance:
+			stims.append(onset)
+	return stims
+
+def find_pulse(data,mean_intvl=5000,std=5,pulse_width=50):
+	import more_itertools as mit
+
+	stim_start = np.where(data>np.mean(data.iloc[:mean_intvl])+np.std(data.iloc[:mean_intvl])*std)[0]
+
+	steps = [list(group) for group in mit.consecutive_groups(stim_start)]
+
+	stims = [step for step in steps if len(step)>pulse_width]
+
+	return(stims)
+
+
 def points_in_circle_np(radius, x0=0, y0=0, ):
 	""" 
 	For xy points in a coordinate plane, generate a circle of radius = radius (in pixels) around point (x0,y0)
